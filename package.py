@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 from typing import Optional, Union, List
 from datetime import time
-
+import csv
+from address_id import get_id
 
 @dataclass
 class Package:
@@ -29,8 +30,14 @@ class DeliveredWith:
 
 def parse_pack_from_row(row) -> Package:
     pack_id = int(row[0])
-    address = int(row[1])
-    deadline = time.fromisoformat(row[2]) if row[2] else None
+    address = get_id(row[1])
+    if address is None:
+        raise Exception(f'Address {row[1]} not found')
+    deadline = row[2]
+    if deadline == 'EOD':
+        deadline = None
+    else:
+        deadline = time.fromisoformat(deadline)
     weight = float(row[3])
     raw_note = row[4]
     note = None
@@ -44,3 +51,18 @@ def parse_pack_from_row(row) -> Package:
         elif note_parts[0] == 'PACK':
             note = DeliveredWith([int(x) for x in note_parts[1:]])
     return Package(pack_id, address, weight, deadline, note)
+
+
+def parse_packs_from_file(file_path: str) -> List[Package]:
+    packs = []
+    reader = csv.reader(open(file_path, 'r'))
+    # skip header
+    next(reader)
+    for row in reader:
+        packs.append(parse_pack_from_row(row))
+    return packs
+
+
+PACKS = parse_packs_from_file('data/package.csv')
+
+# TODO: write functions to query packages by id, address, deadline, and special notes
