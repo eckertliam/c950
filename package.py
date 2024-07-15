@@ -72,14 +72,14 @@ def parse_packs_from_file(file_path: str, address_id_table: AddressIdTable) -> L
     return packs
 
 
-@dataclass
 class PackageTable:
     """Package table class: query packages by different criteria"""
-    table: List[Package] = None
-
-    @classmethod
-    def load_from_file(cls, file_path: str, address_id_table: AddressIdTable) -> 'PackageTable':
-        return cls(parse_packs_from_file(file_path, address_id_table))
+    def __init__(self, address_id_table: Optional[AddressIdTable] = None, file_path: Optional[str] = None) -> None:
+        """need both address_id_table and file_path or neither to initialize the table"""
+        if address_id_table and file_path:
+            self.table: List[Package] = parse_packs_from_file(file_path, address_id_table)
+        else:
+            self.table = []
 
     def get_package(self, package_id: int) -> Optional[Package]:
         """get a package by id"""
