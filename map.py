@@ -1,4 +1,5 @@
 from typing import TypeVar, Optional, List, Iterator, Tuple, Generic
+from dataclasses import dataclass, field
 
 """key type"""
 K = TypeVar('K')
@@ -7,10 +8,10 @@ K = TypeVar('K')
 V = TypeVar('V')
 
 
+@dataclass
 class Map(Generic[K, V]):
-    def __init__(self):
-        self.keys: List[K] = []
-        self.values: List[V] = []
+    keys: List[K] = field(default_factory=list)
+    values: List[V] = field(default_factory=list)
 
     def push(self, key: K, value: V) -> None:
         self.keys.append(key)
