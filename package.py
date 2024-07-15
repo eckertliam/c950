@@ -4,8 +4,10 @@ from datetime import time
 import csv
 from address_id import AddressIdTable
 
+
 @dataclass
 class Package:
+    """Package class"""
     id: int
     address: int
     weight: float
@@ -17,24 +19,28 @@ class Package:
 
 @dataclass
 class RequireTruck:
+    """class for packages that require a specific truck to deliver"""
     truck_id: int
 
 
 @dataclass
 class Delay:
+    """delayed package class"""
     delay_time: time
 
 
 @dataclass
 class DeliveredWith:
+    """class for packages that are delivered with other packages"""
     package_ids: List[int]
 
 
 def parse_pack_from_row(row: List[str], address_id_table: AddressIdTable) -> Package:
+    """Parse a package from a row of a csv reader"""
     pack_id = int(row[0])
     address = address_id_table.get_id(row[1])
     if address is None:
-        raise Exception(f'Address {row[1]} not found')
+        raise Exception(f'Address {row[1]} not found in address to id table.')
     deadline = row[2]
     if deadline == 'EOD':
         deadline = None
@@ -56,6 +62,7 @@ def parse_pack_from_row(row: List[str], address_id_table: AddressIdTable) -> Pac
 
 
 def parse_packs_from_file(file_path: str, address_id_table: AddressIdTable) -> List[Package]:
+    """Parse packages from a csv file"""
     packs = []
     reader = csv.reader(open(file_path, 'r'))
     # skip header
@@ -67,6 +74,7 @@ def parse_packs_from_file(file_path: str, address_id_table: AddressIdTable) -> L
 
 @dataclass
 class PackageTable:
+    """Package table class: query packages by different criteria"""
     table: List[Package] = None
 
     @classmethod
@@ -74,25 +82,32 @@ class PackageTable:
         return cls(parse_packs_from_file(file_path, address_id_table))
 
     def get_package(self, package_id: int) -> Optional[Package]:
+        """get a package by id"""
         for pack in self.table:
             if pack.id == package_id:
                 return pack
         return None
 
     def get_special_packages(self) -> List[Package]:
+        """get all packages with a note"""
         return [pack for pack in self.table if pack.note is not None]
 
     def get_deadline_packages(self) -> List[Package]:
+        """get all packages with a deadline"""
         return [pack for pack in self.table if pack.deadline is not None]
 
     def get_delayed_packages(self) -> List[Package]:
+        """get all delayed packages"""
         return [pack for pack in self.table if pack.note is not None and isinstance(pack.note, Delay)]
 
     def get_truck_required_packages(self) -> List[Package]:
+        """get all packages that require a specific truck"""
         return [pack for pack in self.table if pack.note is not None and isinstance(pack.note, RequireTruck)]
 
     def get_packages_by_address(self, address_id: int) -> List[Package]:
+        """get all packages going to a specific address"""
         return [pack for pack in self.table if pack.address == address_id]
 
-    def query_packages(self, pred: Callable) -> List[Package]:
-        return [pack for pack in self.table if pred(pack)]
+    def query_packages(self, predicate: Callable[[Package], bool]) -> List[Package]:
+        """query packages by a predicate function"""
+        return [pack for pack in self.table if predicate(pack)]
