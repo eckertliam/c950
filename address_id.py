@@ -12,7 +12,7 @@ class AddressIdTable:
     def load_from_file(self, file_path: str) -> None:
         reader = csv.reader(open(file_path, 'r'))
         for row in reader:
-            self.table.push(row[0], int(row[1]))
+            self.table.set(row[0], int(row[1]))
 
     def get_id(self, address: str) -> Optional[int]:
         return self.table.get(address)

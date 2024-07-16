@@ -18,8 +18,16 @@ class Map(Generic[K, V]):
         return hash(key) % self.size
 
     def set(self, key: K, value: V) -> None:
-        """Set a key value pair into the map"""
+        """
+        Set a key value pair into the map or update the value if key already exists.
+        Best case O(1) if key is at the beginning of the bucket or bucket is empty.
+        Worst case O(N) if key is at the end of the bucket.
+        """
         idx = self._hash(key)
+        # check if bucket is empty
+        if not self.buckets[idx]:
+            self.buckets[idx].append((key, value))
+            return
         # check if key already exists
         for i, (k, _) in enumerate(self.buckets[idx]):
             if k == key:
@@ -29,7 +37,10 @@ class Map(Generic[K, V]):
         self.buckets[idx].append((key, value))
 
     def get(self, key: K) -> Optional[V]:
-        """Get a value by key"""
+        """Get a value by key.
+        Best case O(1) if key is at the beginning of the bucket.
+        Worst case O(N) if key is at the end of the bucket.
+        """
         idx = self._hash(key)
         for k, v in self.buckets[idx]:
             if k == key:
@@ -56,4 +67,3 @@ class Map(Generic[K, V]):
     def list_values(self) -> List[V]:
         """List all values in the map"""
         return [v for _, v in self.list_all()]
-

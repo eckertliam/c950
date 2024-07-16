@@ -77,15 +77,17 @@ class PackageTable:
     def __init__(self, address_id_table: Optional[AddressIdTable] = None, file_path: Optional[str] = None) -> None:
         """need both address_id_table and file_path or neither to initialize the table"""
         if address_id_table and file_path:
-            self.table: List[Package] = parse_packs_from_file(file_path, address_id_table)
+            self.table = parse_packs_from_file(file_path, address_id_table)
         else:
             self.table = []
 
     def get_package(self, package_id: int) -> Optional[Package]:
-        """get a package by id"""
-        for pack in self.table:
-            if pack.id == package_id:
-                return pack
+        """
+        get a package by id, this is a hacky way to get O(1) access to packages by id since we know our ids begin at 1
+        """
+        package = self.table[package_id - 1]
+        if package.id == package_id:
+            return package
         return None
 
     def get_special_packages(self) -> List[Package]:
