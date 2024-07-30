@@ -1,4 +1,5 @@
-from typing import List, Optional, Tuple, TypeVar, Generic, Union
+from typing import List, Optional, Tuple, TypeVar, Generic
+from enum import Enum, auto
 import csv
 from dataclasses import dataclass, field
 from datetime import time
@@ -102,8 +103,8 @@ class Address:
 class AddressMap:
     """AddressMap is a map of addresses to address ids and vice versa"""
     def __init__(self):
-        self.addresses = Map[str, Address]
-        self.ids = Map[int, Address]
+        self.addresses = Map[str, Address]()
+        self.ids = Map[int, Address]()
 
     def insert(self, address: Address) -> None:
         """Insert an address into the map"""
@@ -119,8 +120,11 @@ class AddressMap:
         return self.ids.get(address_id)
 
 
-"""Status type variable 'HUB' | 'EN_ROUTE' | 'DELIVERED'"""
-Status = Union['HUB', 'EN_ROUTE', 'DELIVERED']
+class Status(Enum):
+    """Enum for package status"""
+    HUB = auto()
+    EN_ROUTE = auto()
+    DELIVERED = auto()
 
 
 @dataclass
@@ -132,7 +136,7 @@ class Package:
     weight: float
     pack_id: int
     deadline: Optional[time] = None
-    status: Status = 'HUB'
+    status: Status = Status.HUB
     requires_truck: Optional[int] = None
     truck_id: Optional[int] = None
     delay: Optional[time] = None
@@ -171,14 +175,14 @@ class PackageMap:
         """mark a package as delivered"""
         package = self.get(pack_id)
         if package:
-            package.status = 'DELIVERED'
+            package.status = Status.DELIVERED
             self.insert(package)
 
     def mark_en_route(self, pack_id: int) -> None:
         """mark a package as en route"""
         package = self.get(pack_id)
         if package:
-            package.status = 'EN_ROUTE'
+            package.status = Status.EN_ROUTE
             self.insert(package)
 
     def mark_packs_en_route(self, pack_ids: List[int]) -> None:
@@ -187,8 +191,20 @@ class PackageMap:
             self.mark_en_route(pack_id)
 
     def add_address_to_route(self, address_id: int) -> List[int]:
-        """get all packages at an address"""
-        return [package.pack_id for package in self.packages if package and package.address_id == address_id]
+        """get all packages at an address that are not en route and add them to the route"""
+        packs = []
+        for package in self.packages:
+            if package and package.address_id == address_id and package.status == Status.HUB:
+                packs.append(package.pack_id)
+        return packs
+
+    def get_all_packages(self) -> List[Package]:
+        """get all packages in the map"""
+        return [package for package in self.packages if package]
+
+    def get_all_hub_packages(self) -> List[Package]:
+        """get all packages in the map that are at the hub"""
+        return [package for package in self.packages if package and package.status == Status.HUB]
 
 
 @dataclass
@@ -201,6 +217,7 @@ class Truck:
     max_packs: int = 16
     packages: List[int] = field(default_factory=list)
     visited: List[int] = field(default_factory=list)
+    departure_time: time = time(8, 0)
 
     def add_to_route(self, address_id: int, package_map: PackageMap) -> bool:
         """add an address to the truck route returns true if the truck has room for the address"""
@@ -212,8 +229,56 @@ class Truck:
         package_map.mark_packs_en_route(new_packs)
         return True
 
-# UTILITY FUNCTIONS
+    def set_departure_time(self, dt: time, package_map: PackageMap) -> bool:
+        """set departure time and check for conflicting delays"""
+        self.departure_time = dt
+        # loop through packages and make sure they none have conflicting delays
+        for pack_id in self.packages:
+            package = package_map.get(pack_id)
+            if package.delay:
+                if dt < package.delay:
+                    return False
+        return True
 
+
+class TruckMap:
+    def __init__(self, size: int = 3):
+        self.size = size
+        self.trucks: List[Optional[Truck]] = [None] * size
+        self._default()
+
+    def _default(self):
+        truck1 = Truck(1, True)
+        truck2 = Truck(2, True)
+        truck3 = Truck(3, False)
+        self.insert(truck1)
+        self.insert(truck2)
+        self.insert(truck3)
+
+    def _expand(self, new_size: int) -> None:
+        self.trucks += [None] * (new_size - self.size)
+        self.size = new_size
+
+    def insert(self, truck: Truck) -> None:
+        if self.size <= truck.truck_id:
+            self._expand(truck.truck_id + 1)
+        self.trucks[truck.truck_id] = truck
+
+    def from_list(self, trucks: List[Truck]) -> None:
+        for truck in trucks:
+            self.insert(truck)
+
+    def get(self, truck_id: int) -> Optional[Truck]:
+        return self.trucks[truck_id]
+
+    def add_to_truck_route(self, truck_id: int, address_id: int, package_map: PackageMap) -> bool:
+        truck = self.get(truck_id)
+        if truck:
+            return truck.add_to_route(address_id, package_map)
+        return False
+
+
+# UTILITY FUNCTIONS
 
 def distance_matrix_from_csv(file_path: str) -> DistanceMatrix:
     """read a distance matrix from a csv file"""
@@ -235,9 +300,10 @@ def read_address_row(row: List[str]) -> Address:
 
 
 def read_address_csv(file_path: str) -> AddressMap:
-    """read addresses from a csv file"""
+    """read addresses from a csv file and input the data into an address map"""
     address_map = AddressMap()
     reader = csv.reader(open(file_path, 'r'))
+    # skip header
     for row in reader:
         address = read_address_row(row)
         address_map.insert(address)
@@ -247,12 +313,12 @@ def read_address_csv(file_path: str) -> AddressMap:
 def read_package_row(row: List[str], address_map: AddressMap) -> Package:
     """read a package from a csv row"""
     pack_id = int(row[0])
-    address = address_map.get_by_id(int(row[1]))
+    address = address_map.get_by_address(row[1])
     deadline = None
     if row[2] != 'EOD':
         deadline = time.fromisoformat(row[2])
     weight = float(row[3])
-    status = 'HUB'
+    status = Status.HUB
     requires_truck = None
     delay = None
     requires_packs = []
@@ -261,7 +327,7 @@ def read_package_row(row: List[str], address_map: AddressMap) -> Package:
     if special_notes[0] == 'TRUCK':
         requires_truck = int(special_notes[1])
     elif special_notes[0] == 'DELAYED':
-        delay = int(special_notes[1])
+        delay = time.fromisoformat(special_notes[1])
     elif special_notes[0] == 'PACK':
         requires_packs = [int(pack) for pack in special_notes[1:]]
     return Package(address.address_id, weight, pack_id, deadline, status, requires_truck, None, delay, requires_packs)
@@ -277,3 +343,109 @@ def read_package_csv(file_path: str, address_map: AddressMap) -> PackageMap:
         package = read_package_row(row, address_map)
         packages.insert(package)
     return packages
+
+
+def load_trucks(truck_map: TruckMap, package_map: PackageMap, address_map: AddressMap):
+    # tracks the addresses that have not been assigned
+    addresses = address_map.ids.list_keys()
+    # list all packages that require other packages
+    # each element is either none or a list of package ids that the package requires
+    requires_packs: List[Optional[List[int]]] = [None] * len(package_map.packages)
+    # list all packages that have a deadline at their index
+    deadlines: List[Optional[time]] = [None] * len(package_map.packages)
+    # list all packages that have a delay at their index
+    delays: List[Optional[time]] = [None] * len(package_map.packages)
+    for package in package_map.get_all_packages():
+        if package.requires_truck:
+            # if the package requires a truck add it to the truck list
+            truck_map.add_to_truck_route(package.requires_truck, package.address_id, package_map)
+            addresses.remove(package.address_id)
+        if package.requires_packs:
+            requires_packs[package.pack_id] = package.requires_packs
+        if package.deadline:
+            deadlines[package.pack_id] = package.deadline
+        if package.delay:
+            delays[package.pack_id] = package.delay
+    # truck 1 will leave at 0800
+    truck_map.get(1).set_departure_time(time(8, 0), package_map)
+    # truck 2 will leave at 0930
+    truck_map.get(2).set_departure_time(time(9, 30), package_map)
+    # truck 3 will leave at 1030
+    truck_map.get(3).set_departure_time(time(10, 30), package_map)
+    for i, deadline in enumerate(deadlines):
+        if deadline and package_map.get(i) and package_map.get(i).address_id in addresses:
+            # assign packages that have a deadline and no delay the truck with the earliest departure time
+            if not delays[i]:
+                if truck_map.add_to_truck_route(1, package_map.get(i).address_id, package_map):
+                    addresses.remove(package_map.get(i).address_id)
+                elif truck_map.add_to_truck_route(2, package_map.get(i).address_id, package_map):
+                    addresses.remove(package_map.get(i).address_id)
+                else:
+                    raise ValueError(f'Package {i} could not be assigned to a truck that leaves before its deadline')
+            else:
+                # assign packages that have a delay and deadline to the truck that has a departure time after the delay
+                if truck_map.add_to_truck_route(2, package_map.get(i).address_id, package_map):
+                    addresses.remove(package_map.get(i).address_id)
+                else:
+                    raise ValueError(f'Package {i} could not be assigned to a truck that leaves after its delay')
+
+    # assign all remaining packages where they fit and work around delays and packages requiring other packages
+    for package in package_map.get_all_hub_packages():
+        if package.address_id not in addresses:
+            continue
+        if not requires_packs[package.pack_id] and not delays[package.pack_id]:
+            # see where the package fits
+            for truck_id in [1, 2, 3]:
+                if truck_map.add_to_truck_route(truck_id, package.address_id, package_map):
+                    addresses.remove(package.address_id)
+                    break
+            # if the package was not assigned to a truck raise an error
+            if package.status == Status.HUB:
+                raise ValueError(f'Package {package.pack_id} could not be assigned to a truck')
+        elif requires_packs[package.pack_id]:
+            for dep_pack_id in requires_packs[package.pack_id]:
+                dep_pack = package_map.get(dep_pack_id)
+                if dep_pack.status != Status.HUB:
+                    raise ValueError(f'Package {package.pack_id} requires package {dep_pack_id} which is not at the hub')
+                else:
+                    # add the packages to truck 3 as it should be the most empty
+                    # throws an error if the package cannot be added to a truck
+                    if not truck_map.add_to_truck_route(3, package.address_id, package_map):
+                        raise ValueError(f'Package {package.pack_id} could not be assigned to truck 3')
+                    else:
+                        addresses.remove(package.address_id)
+            # add the package to truck 3
+            # throws an error if the package cannot be added to a truck
+            if not truck_map.add_to_truck_route(3, package.address_id, package_map):
+                raise ValueError(f'Package {package.pack_id} could not be assigned to truck 3')
+            else:
+                addresses.remove(package.address_id)
+        elif delays[package.pack_id]:
+            # add the package to truck 2
+            # throws an error if the package cannot be added to a truck
+            if not truck_map.add_to_truck_route(2, package.address_id, package_map):
+                if not truck_map.add_to_truck_route(3, package.address_id, package_map):
+                    raise ValueError(f'Package {package.pack_id} could not be assigned to truck 2 or 3')
+            addresses.remove(package.address_id)
+
+
+def main():
+    truck_map = TruckMap()
+    address_map = read_address_csv('data/address_id.csv')
+    distance_matrix = distance_matrix_from_csv('data/distances.csv')
+    package_map = read_package_csv('data/packages.csv', address_map)
+    load_trucks(truck_map, package_map, address_map)
+    print('Truck 1')
+    print(truck_map.get(1).route)
+    print('Truck 2')
+    print(truck_map.get(2).route)
+    print('Truck 3')
+    print(truck_map.get(3).route)
+    # check if any packages are not en route
+    for package in package_map.get_all_packages():
+        if package.status != Status.EN_ROUTE:
+            print(f'Package {package.pack_id} is not en route')
+
+
+if __name__ == '__main__':
+    main()
