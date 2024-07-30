@@ -167,6 +167,50 @@ class PackageMap:
     def remove(self, pack_id: int) -> None:
         self.packages[pack_id] = None
 
+    def mark_delivered(self, pack_id: int) -> None:
+        """mark a package as delivered"""
+        package = self.get(pack_id)
+        if package:
+            package.status = 'DELIVERED'
+            self.insert(package)
+
+    def mark_en_route(self, pack_id: int) -> None:
+        """mark a package as en route"""
+        package = self.get(pack_id)
+        if package:
+            package.status = 'EN_ROUTE'
+            self.insert(package)
+
+    def mark_packs_en_route(self, pack_ids: List[int]) -> None:
+        """mark a list of packages as en route"""
+        for pack_id in pack_ids:
+            self.mark_en_route(pack_id)
+
+    def add_address_to_route(self, address_id: int) -> List[int]:
+        """get all packages at an address"""
+        return [package.pack_id for package in self.packages if package and package.address_id == address_id]
+
+
+@dataclass
+class Truck:
+    """Truck is a vehicle that delivers packages to addresses
+    it has a truck id, a list of package ids it is carrying, and a list of addresses it has visited"""
+    truck_id: int
+    hasDriver: bool
+    route: list[int] = field(default_factory=list)
+    max_packs: int = 16
+    packages: List[int] = field(default_factory=list)
+    visited: List[int] = field(default_factory=list)
+
+    def add_to_route(self, address_id: int, package_map: PackageMap) -> bool:
+        """add an address to the truck route returns true if the truck has room for the address"""
+        new_packs = package_map.add_address_to_route(address_id)
+        if len(self.packages) + len(new_packs) > self.max_packs:
+            return False
+        self.packages += new_packs
+        self.route.append(address_id)
+        package_map.mark_packs_en_route(new_packs)
+        return True
 
 # UTILITY FUNCTIONS
 
