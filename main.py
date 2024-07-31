@@ -2,7 +2,18 @@ from typing import List, Optional, Tuple, TypeVar, Generic
 from enum import Enum, auto
 import csv
 from dataclasses import dataclass, field
-from datetime import time
+from datetime import time, timedelta, datetime
+
+# CONSTANTS
+
+# speed of the truck in miles per hour
+TRUCK_SPEED = 18
+
+# truck max packages
+TRUCK_MAX_PACKAGES = 16
+
+# truck max miles
+TRUCK_MAX_MILES = 140
 
 # DATA STRUCTURES
 
@@ -178,6 +189,13 @@ class PackageMap:
             package.status = Status.DELIVERED
             self.insert(package)
 
+    def mark_address_delivered(self, address_id: int) -> None:
+        """mark all packages at an address as delivered"""
+        for package in self.packages:
+            if package and package.address_id == address_id:
+                self.mark_delivered(package.pack_id)
+                print(f'Package {package.pack_id} has been delivered')
+
     def mark_en_route(self, pack_id: int) -> None:
         """mark a package as en route"""
         package = self.get(pack_id)
@@ -214,15 +232,20 @@ class Truck:
     truck_id: int
     hasDriver: bool
     route: list[int] = field(default_factory=list)
-    max_packs: int = 16
     packages: List[int] = field(default_factory=list)
     visited: List[int] = field(default_factory=list)
     departure_time: time = time(8, 0)
+    miles: float = 0
+    complete_time: Optional[time] = None
+
+    def __post_init__(self):
+        # append hub to the visited list
+        self.visited.append(1)
 
     def add_to_route(self, address_id: int, package_map: PackageMap) -> bool:
         """add an address to the truck route returns true if the truck has room for the address"""
         new_packs = package_map.add_address_to_route(address_id)
-        if len(self.packages) + len(new_packs) > self.max_packs:
+        if len(self.packages) + len(new_packs) > TRUCK_MAX_PACKAGES:
             return False
         self.packages += new_packs
         self.route.append(address_id)
@@ -239,6 +262,27 @@ class Truck:
                 if dt < package.delay:
                     return False
         return True
+
+    def visit(self, address_id: int, package_map: PackageMap) -> None:
+        """visit an address and mark all packages as delivered"""
+        print(f'Truck {self.truck_id} is visiting address {address_id}')
+        self.visited.append(address_id)
+        self.route.remove(address_id)
+        # set all packages at the address to delivered
+        package_map.mark_address_delivered(address_id)
+        # remove all packages for the address from the truck
+        self.packages = [pack_id for pack_id in self.packages if package_map.get(pack_id).address_id != address_id]
+
+    def calc_completion_time(self, distance_matrix: DistanceMatrix) -> time:
+        """calculate the completion time of the truck route"""
+        minutes_elapsed = 0
+        for i in range(len(self.visited) - 1):
+            distance = distance_matrix[self.visited[i]][self.visited[i + 1]]
+            minutes_elapsed += distance / TRUCK_SPEED * 60
+        hours = minutes_elapsed // 60
+        minutes = minutes_elapsed % 60
+        et = timedelta(hours=hours, minutes=minutes)
+        return (datetime.combine(datetime.min, self.departure_time) + et).time()
 
 
 class TruckMap:
@@ -344,8 +388,11 @@ def read_package_csv(file_path: str, address_map: AddressMap) -> PackageMap:
         packages.insert(package)
     return packages
 
+# CORE FUNCTIONS
+
 
 def load_trucks(truck_map: TruckMap, package_map: PackageMap, address_map: AddressMap):
+    """load trucks with packages based on package requirements and deadlines"""
     # tracks the addresses that have not been assigned
     addresses = address_map.ids.list_keys()
     # list all packages that require other packages
@@ -388,7 +435,6 @@ def load_trucks(truck_map: TruckMap, package_map: PackageMap, address_map: Addre
                     addresses.remove(package_map.get(i).address_id)
                 else:
                     raise ValueError(f'Package {i} could not be assigned to a truck that leaves after its delay')
-
     # assign all remaining packages where they fit and work around delays and packages requiring other packages
     for package in package_map.get_all_hub_packages():
         if package.address_id not in addresses:
@@ -429,22 +475,58 @@ def load_trucks(truck_map: TruckMap, package_map: PackageMap, address_map: Addre
             addresses.remove(package.address_id)
 
 
+def nearest_address(route: List[int], visited: List[int], distance_matrix: DistanceMatrix) -> Optional[int]:
+    """get the nearest address to the last address in the route that has not been visited"""
+    closest = 1000
+    candidate = -1
+    for address_id, distance in enumerate(distance_matrix[visited[-1]]):
+        if address_id in route and address_id not in visited and distance < closest:
+            closest = distance
+            candidate = address_id
+    if candidate == -1:
+        return None
+    return candidate
+
+
+def next_address(truck: Truck, distance_matrix: DistanceMatrix, package_map: PackageMap) -> Optional[int]:
+    """get the next address for the truck using the greedy algorithm but with considerations for deadlines"""
+    # check if any packages have a deadline
+    deadline_addresses = []
+    print(truck.packages)
+    for pack_id in truck.packages:
+        package = package_map.get(pack_id)
+        # make sure the package is not already delivered
+        if package.status != Status.DELIVERED and package.deadline and package.address_id not in deadline_addresses:
+            deadline_addresses.append(package.address_id)
+    if deadline_addresses:
+        # get the nearest address with a deadline
+        return nearest_address(deadline_addresses, truck.visited, distance_matrix)
+    else:
+        # get the nearest address without considering deadlines
+        return nearest_address(truck.route, truck.visited, distance_matrix)
+
+
+def step_truck(truck: Truck, distance_matrix: DistanceMatrix, package_map: PackageMap) -> bool:
+    """step the truck to the next address"""
+    address = next_address(truck, distance_matrix, package_map)
+    if address is not None:
+        truck.visit(address, package_map)
+        return True
+    else:
+        print(f'Truck {truck.truck_id} has completed its route')
+        return False
+
+
 def main():
     truck_map = TruckMap()
     address_map = read_address_csv('data/address_id.csv')
     distance_matrix = distance_matrix_from_csv('data/distances.csv')
     package_map = read_package_csv('data/packages.csv', address_map)
     load_trucks(truck_map, package_map, address_map)
-    print('Truck 1')
-    print(truck_map.get(1).route)
-    print('Truck 2')
-    print(truck_map.get(2).route)
-    print('Truck 3')
-    print(truck_map.get(3).route)
-    # check if any packages are not en route
-    for package in package_map.get_all_packages():
-        if package.status != Status.EN_ROUTE:
-            print(f'Package {package.pack_id} is not en route')
+    for truck in truck_map.trucks:
+        if truck:
+            while step_truck(truck, distance_matrix, package_map):
+                pass
 
 
 if __name__ == '__main__':
