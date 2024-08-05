@@ -20,10 +20,10 @@ TRUCK_HUB = 0
 
 # DATA STRUCTURES
 
-"""Key-Value type variable"""
+# first we need generic type variables for the map
+# K is the key type
 K = TypeVar('K')
-
-"""Value type variable"""
+# V is the value type
 V = TypeVar('V')
 
 
@@ -43,6 +43,7 @@ class Map(Generic[K, V]):
         Best case O(1) if key is at the beginning of the bucket or bucket is empty.
         Worst case O(N) if key is at the end of the bucket.
         """
+        # get the bucket index
         idx = self._hash(key)
         # check if bucket is empty
         if not self.buckets[idx]:
@@ -85,7 +86,10 @@ class Map(Generic[K, V]):
         return self.get(key)
 
     def list_all(self) -> List[Tuple[K, V]]:
-        """List all key-value pairs in the map"""
+        """
+        List all key-value pairs in the map
+        O(N * M) where N is the number of buckets and M is the number of items in the bucket
+        """
         return [item for bucket in self.buckets for item in bucket]
 
     def __iter__(self):
@@ -143,9 +147,19 @@ class Status(Enum):
 
 @dataclass
 class Package:
-    """Package points to an address, package weight in pounds, package id, delivery deadline
-    status of the package, a required truck id if given, a truck id if assigned,
-    a delay time if the package is delayed, and a list of package ids it must be delivered with if any"""
+    """
+    Package Dataclass:
+    address_id: points to an address in the address map
+    weight: the weight of the package
+    pack_id: the id of the package in the package map
+    deadline: optional deadline for the package
+    status: a status enum for the package
+    requires_truck: optional truck id that the package requires
+    truck_id: a truck id once the package is assigned to a truck
+    delay: for packages that are delayed
+    requires_packs: a list of package ids that this package requires
+    delivery_time: the time the package was delivered
+    """
     address_id: int
     weight: float
     pack_id: int
@@ -157,11 +171,9 @@ class Package:
     requires_packs: List[int] = field(default_factory=list)
     delivery_time: Optional[time] = None
 
-
-"""type definition of a DistanceMatrix as a list of lists of floats 
-allows for efficient O(1) access to distances between addresses"""
+# allows for O(1) access to packages by package id
+# matrix[package 1][package 2] = distance between package 1 and package 2
 DistanceMatrix = List[List[float]]
-
 
 class PackageMap:
     """efficiently store and access packages by package id at O(1)
