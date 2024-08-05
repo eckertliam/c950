@@ -15,6 +15,9 @@ TRUCK_MAX_PACKAGES = 16
 # truck max miles
 TRUCK_MAX_MILES = 140
 
+# truck starting address
+TRUCK_HUB = 0
+
 # DATA STRUCTURES
 
 """Key-Value type variable"""
@@ -152,6 +155,7 @@ class Package:
     truck_id: Optional[int] = None
     delay: Optional[time] = None
     requires_packs: List[int] = field(default_factory=list)
+    delivery_time: Optional[time] = None
 
 
 """type definition of a DistanceMatrix as a list of lists of floats 
@@ -182,18 +186,19 @@ class PackageMap:
     def remove(self, pack_id: int) -> None:
         self.packages[pack_id] = None
 
-    def mark_delivered(self, pack_id: int) -> None:
+    def mark_delivered(self, pack_id: int, time_delivered: time) -> None:
         """mark a package as delivered"""
         package = self.get(pack_id)
         if package:
             package.status = Status.DELIVERED
+            package.delivery_time = time_delivered
             self.insert(package)
 
-    def mark_address_delivered(self, address_id: int) -> None:
+    def mark_address_delivered(self, address_id: int, time_delivered: time) -> None:
         """mark all packages at an address as delivered"""
         for package in self.packages:
             if package and package.address_id == address_id:
-                self.mark_delivered(package.pack_id)
+                self.mark_delivered(package.pack_id, time_delivered)
                 print(f'Package {package.pack_id} has been delivered')
 
     def mark_en_route(self, pack_id: int) -> None:
@@ -230,17 +235,17 @@ class Truck:
     """Truck is a vehicle that delivers packages to addresses
     it has a truck id, a list of package ids it is carrying, and a list of addresses it has visited"""
     truck_id: int
-    hasDriver: bool
     route: list[int] = field(default_factory=list)
     packages: List[int] = field(default_factory=list)
     visited: List[int] = field(default_factory=list)
     departure_time: time = time(8, 0)
+    time_elapsed: timedelta = timedelta(hours=0, minutes=0)
     miles: float = 0
     complete_time: Optional[time] = None
 
     def __post_init__(self):
         # append hub to the visited list
-        self.visited.append(1)
+        self.visited.append(0)
 
     def add_to_route(self, address_id: int, package_map: PackageMap) -> bool:
         """add an address to the truck route returns true if the truck has room for the address"""
@@ -263,26 +268,37 @@ class Truck:
                     return False
         return True
 
-    def visit(self, address_id: int, package_map: PackageMap) -> None:
+    def visit(self, address_id: int, package_map: PackageMap, distance_matrix: DistanceMatrix) -> None:
         """visit an address and mark all packages as delivered"""
         print(f'Truck {self.truck_id} is visiting address {address_id}')
         self.visited.append(address_id)
         self.route.remove(address_id)
         # set all packages at the address to delivered
-        package_map.mark_address_delivered(address_id)
+        package_map.mark_address_delivered(address_id, self.calc_current_time(distance_matrix))
         # remove all packages for the address from the truck
         self.packages = [pack_id for pack_id in self.packages if package_map.get(pack_id).address_id != address_id]
 
-    def calc_completion_time(self, distance_matrix: DistanceMatrix) -> time:
-        """calculate the completion time of the truck route"""
+    def calc_current_time(self, distance_matrix: DistanceMatrix) -> time:
+        """calculate the current relative time of the truck based on the distance matrix"""
         minutes_elapsed = 0
         for i in range(len(self.visited) - 1):
             distance = distance_matrix[self.visited[i]][self.visited[i + 1]]
             minutes_elapsed += distance / TRUCK_SPEED * 60
+        # use integer division to get hours
         hours = minutes_elapsed // 60
+        # mod the remaining minutes
         minutes = minutes_elapsed % 60
         et = timedelta(hours=hours, minutes=minutes)
         return (datetime.combine(datetime.min, self.departure_time) + et).time()
+
+    def calc_miles_traveled(self, distance_matrix: DistanceMatrix) -> float:
+        """calculate the miles traveled by the truck"""
+        miles = 0
+        for i in range(len(self.visited) - 1):
+            miles += distance_matrix[self.visited[i]][self.visited[i + 1]]
+        return miles
+
+
 
 
 class TruckMap:
@@ -292,9 +308,9 @@ class TruckMap:
         self._default()
 
     def _default(self):
-        truck1 = Truck(1, True)
-        truck2 = Truck(2, True)
-        truck3 = Truck(3, False)
+        truck1 = Truck(1)
+        truck2 = Truck(2)
+        truck3 = Truck(3)
         self.insert(truck1)
         self.insert(truck2)
         self.insert(truck3)
@@ -510,11 +526,103 @@ def step_truck(truck: Truck, distance_matrix: DistanceMatrix, package_map: Packa
     """step the truck to the next address"""
     address = next_address(truck, distance_matrix, package_map)
     if address is not None:
-        truck.visit(address, package_map)
+        truck.visit(address, package_map, distance_matrix)
         return True
     else:
         print(f'Truck {truck.truck_id} has completed its route')
         return False
+
+# QUERY FUNCTIONS
+
+
+def _help():
+    """Print the help message"""
+    print('Commands:')
+    print('exit: exit the program')
+    print('help: display this help message')
+    print('PACKAGE <package_id> | * : get information about a package, or all packages')
+    print('TRUCK <truck_id> | * : get information about a truck, or all trucks')
+    print('ADDRESS <address_id> | * : get information about an address, or all addresses')
+    print('STATUS <status> | * : get all packages with a certain status, or all packages')
+    print('<query> AT <time> : queries display the end state of the system, but queries can be done for a time')
+    print('Examples:')
+    print('PACKAGE 1')
+    print('TRUCK 1')
+    print('ADDRESS 1')
+    print('STATUS DELIVERED')
+    print('STATUS HUB')
+    print('PACKAGE * AT 10:00')
+
+
+def query_package(package_map: PackageMap, package_id: int):
+    """Query a package by package id"""
+    package = package_map.get(package_id)
+    if package:
+        # TODO: print package info
+    else:
+        print(f'Package {package_id} not found')
+
+
+def query_truck(truck_map: TruckMap, truck_id: int):
+    """Query a truck by truck id"""
+    truck = truck_map.get(truck_id)
+    if truck:
+        # TODO: print truck info
+    else:
+        print(f'Truck {truck_id} not found')
+
+
+def query_address(address_map: AddressMap, address_id: int):
+    """Query an address by address id"""
+    address = address_map.get_by_id(address_id)
+    if address:
+        # TODO: print address info
+    else:
+        print(f'Address {address_id} not found')
+
+
+def repl(truck_map: TruckMap, address_map: AddressMap, package_map: PackageMap, distance_matrix: DistanceMatrix):
+    # a read-eval-print loop for querying the package delivery system
+    # syntax inspired by SQL
+    # first flush the terminal
+    print('\033c')
+    print('Welcome to the Package Delivery System Query Interface')
+    print('Type "help" for a list of commands')
+    print('Type "exit" to quit')
+    # wait for user input
+    while True:
+        query = input('>>> ')
+        # split the query by spaces
+        query_chunks = query.split(' ')
+        # match on the query
+        match query_chunks[0]:
+            case 'exit':
+                break
+            case 'help':
+                _help()
+            case 'PACKAGE':
+                if query_chunks[1] == '*':
+                    # query all packages
+                    pass
+                else:
+                    query_package(package_map, int(query_chunks[1]))
+            case 'TRUCK':
+                if query_chunks[1] == '*':
+                    # query all trucks
+                    pass
+                else:
+                    query_truck(truck_map, int(query_chunks[1]))
+            case 'ADDRESS':
+                if query_chunks[1] == '*':
+                    # query all addresses
+                    pass
+                else:
+                    query_address(address_map, int(query_chunks[1]))
+            case 'STATUS':
+                # query packages by status
+                pass
+
+
 
 
 def main():
