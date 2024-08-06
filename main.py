@@ -145,6 +145,15 @@ class PackageStatus(Enum):
     EN_ROUTE = auto()
     DELIVERED = auto()
 
+    def __repr__(self):
+        match self:
+            case PackageStatus.HUB:
+                return "Hub"
+            case PackageStatus.EN_ROUTE:
+                return "En Route"
+            case PackageStatus.DELIVERED:
+                return "Delivered"
+
 
 @dataclass
 class Package:
@@ -207,9 +216,30 @@ class Truck:
     visited: List[int] = field(default_factory=list)
     departure_time: time = time(8, 0)
     complete_time: Optional[time] = None
-    left_hub: bool = False
     has_driver: bool = True
-    miles_traveled: float = 0
+    route_distance: float = 0
+    time_for_route: timedelta = timedelta(hours=0)
+
+    def __post_init__(self):
+        self.route.append(TRUCK_HUB)
+
+    def load(self, package: Package, distance_matrix: DistanceMatrix) -> None:
+        # add address to route if not already in route
+        if package.address_id not in self.route:
+            self.route.append(package.address_id)
+            # add distance to route distance
+            self.route_distance += distance_matrix[self.route[-2]][self.route[-1]]
+            # calculate time for route
+            self.time_for_route += timedelta(hours=self.route_distance / TRUCK_SPEED)
+        self.packages.append(package.pack_id)
+
+    def time_when_route_complete(self) -> time:
+        """calculate the time the truck will complete its route as it is"""
+        return (datetime.combine(datetime.min, self.departure_time) + self.time_for_route).time()
+
+    def truck_full(self) -> bool:
+        """check if the truck is full"""
+        return len(self.packages) >= TRUCK_MAX_PACKAGES
 
 
 class TruckMap:
@@ -310,3 +340,133 @@ def read_package_csv(file_path: str, address_map: AddressMap) -> PackageMap:
     return packages
 
 # CORE FUNCTIONS
+
+# ASSIGN PACK and AUXILIARY FUNCTIONS
+
+# called when a package requires a truck
+
+
+def pack_req_truck(package: Package, truck_map: TruckMap, package_map: PackageMap, distance_matrix: DistanceMatrix) -> int:
+    # make sure truck is not full throw an error if it is
+    if truck_map.get(package.requires_truck).truck_full():
+        raise ValueError(f'Package {package.pack_id} requires truck {package.requires_truck} but truck is full')
+    truck_map.get(package.requires_truck).load(package, distance_matrix)
+    package_map.get(package.pack_id).truck_id = package.requires_truck
+    return package.requires_truck
+
+
+# called when a package requires a truck
+def pack_req_packs(package: Package, truck_map: TruckMap, package_map: PackageMap, distance_matrix: DistanceMatrix) -> int:
+    # get the truck that is carrying the required packages
+    truck_id = None
+    for pack in package.requires_packs:
+        if package_map.get(pack).truck_id:
+            truck_id = package_map.get(pack).truck_id
+            break
+    # if no truck is carrying the required packages assign them all to the same emptiest truck
+    if not truck_id:
+        # find the emptiest truck
+        emptiest_truck = None
+        for truck in truck_map.trucks.list_values():
+            if not truck.truck_full():
+                if not emptiest_truck:
+                    emptiest_truck = truck
+                elif len(truck.packages) < len(emptiest_truck.packages):
+                    emptiest_truck = truck
+        if not emptiest_truck:
+            raise ValueError(f'No truck has space for package {package.pack_id}')
+        truck_id = emptiest_truck.truck_id
+        # load all required packages into the truck
+        for pack in package.requires_packs:
+            truck_map.get(truck_id).load(package_map.get(pack), distance_matrix)
+            package_map.get(pack).truck_id = truck_id
+    # load the package into the truck
+    truck_map.get(truck_id).load(package, distance_matrix)
+    package_map.get(package.pack_id).truck_id = truck_id
+    return truck_id
+
+
+def pack_delay_deadline(package: Package, truck_map: TruckMap, package_map: PackageMap, distance_matrix: DistanceMatrix) -> int:
+    # find a truck that can deliver the package before the deadline but leaves after the delay
+    for truck in truck_map.trucks.list_values():
+        if truck.time_when_route_complete() < package.deadline and truck.departure_time > package.delay and not truck.truck_full():
+            truck_map.get(truck.truck_id).load(package, distance_matrix)
+            package_map.get(package.pack_id).truck_id = truck.truck_id
+            return truck.truck_id
+    # if no truck can deliver the package before the deadline but leaves after the delay
+    raise ValueError(f'No truck can deliver package {package.pack_id} before the deadline but leaves after the delay')
+
+
+def pack_delay(package: Package, truck_map: TruckMap, package_map: PackageMap, distance_matrix: DistanceMatrix) -> int:
+    # find a truck that can deliver the package after the delay
+    for truck in truck_map.trucks.list_values():
+        if truck.departure_time > package.delay and not truck.truck_full():
+            truck_map.get(truck.truck_id).load(package, distance_matrix)
+            package_map.get(package.pack_id).truck_id = truck.truck_id
+            return truck.truck_id
+    # if no truck can deliver the package after the delay
+    raise ValueError(f'No truck can deliver package {package.pack_id} after the delay')
+
+
+def pack_deadline(package: Package, truck_map: TruckMap, package_map: PackageMap, distance_matrix: DistanceMatrix) -> int:
+    # find a truck that can deliver the package before the deadline
+    for truck in truck_map.trucks.list_values():
+        if truck.time_when_route_complete() < package.deadline and not truck.truck_full():
+            truck_map.get(truck.truck_id).load(package, distance_matrix)
+            package_map.get(package.pack_id).truck_id = truck.truck_id
+            return truck.truck_id
+    # if no truck can deliver the package before the deadline
+    raise ValueError(f'No truck can deliver package {package.pack_id} before the deadline')
+
+
+def greedy_assign(package: Package, truck_map: TruckMap, package_map: PackageMap, distance_matrix: DistanceMatrix) -> int:
+    # if package has no special requirements
+    # first check if the package address is already in a truck route
+    # if it is not choose the truck that is closest to the package address
+    # if the truck is full choose the next closest truck
+    shortest_distance = Infinity()
+    closest_truck = None
+    for truck in truck_map.trucks.list_values():
+        if not truck.truck_full():
+            if package.address_id in truck.route:
+                closest_truck = truck
+                break
+            if distance_matrix[truck.route[-1]][package.address_id] < shortest_distance:
+                shortest_distance = distance_matrix[truck.route[-1]][package.address_id]
+                closest_truck = truck
+    if closest_truck:
+        truck_map.get(closest_truck.truck_id).load(package, distance_matrix)
+        package_map.get(package.pack_id).truck_id = closest_truck.truck_id
+        return closest_truck.truck_id
+    else:
+        raise ValueError(f'No truck can deliver package {package.pack_id}')
+
+
+def assign_pack(pack_id: int, truck_map: TruckMap, package_map: PackageMap, distance_matrix: DistanceMatrix) -> int:
+    """
+    Use a greedy algorithm to assign a package to a truck return the truck id
+    best case O(1) if the package is already assigned to a truck
+    worst case O(N * M) where N is the number of trucks and M is the number of packages required by the package
+    """
+    package = package_map.get(pack_id)
+    # check if package is already assigned to a truck
+    if package.truck_id:
+        return package.truck_id
+    # check if package requires a specific truck
+    if package.requires_truck:
+        return pack_req_truck(package, truck_map, package_map, distance_matrix)
+    # if package must be delivered in the same truck as other packages
+    if package.requires_packs:
+        return pack_req_packs(package, truck_map, package_map, distance_matrix)
+    # if package has a deadline and a delay
+    if package.deadline and package.delay:
+        return pack_delay_deadline(package, truck_map, package_map, distance_matrix)
+    # if package is delayed
+    if package.delay:
+        return pack_delay(package, truck_map, package_map, distance_matrix)
+    # if package has a deadline
+    if package.deadline:
+        # find a truck that can deliver the package before the deadline
+        return pack_deadline(package, truck_map, package_map, distance_matrix)
+    # if package has no special requirements
+    return greedy_assign(package, truck_map, package_map, distance_matrix)
