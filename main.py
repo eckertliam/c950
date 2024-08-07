@@ -181,48 +181,47 @@ class Package:
     truck_id: Optional[int] = None
     delay: Optional[time] = None
     depends_on: List[int] = field(default_factory=list)
-    is_depended_on: List[int] = field(default_factory=list)
     delivery_time: Optional[time] = None
-    priority: float = 0
 
-    def __post_init__(self):
-        # calculate the priority of the package
-        # closer to 0 is higher priority
-        if self.deadline and self.delay:
-            # these packages have the smallest delivery window
-            # they must be prioritized
-            # get the window between the deadline and delay
-            deadline_dt = datetime.combine(datetime.min, self.deadline)
-            delay_dt = datetime.combine(datetime.min, self.delay)
-            # time window
-            tw = (deadline_dt - delay_dt).total_seconds()
-            # the smaller the time window the higher the priority
-            # 0.7 is our lowest weight
-            self.priority = 0.7 - (1 / tw)
-        elif self.deadline:
-            # get the hours between 0800 and the deadline
-            deadline_dt = datetime.combine(datetime.min, self.deadline)
-            departure_dt = datetime.combine(datetime.min, time(8, 0))
-            tw = (deadline_dt - departure_dt).total_seconds()
-            # 0.8 is the chosen weight for deadlines because they are more difficult to schedule
-            self.priority = 0.8 - (1 / tw)
-        elif self.delay:
-            # get the hours between the delay and 0800
-            # the smaller the time window the higher the priority
-            delay_dt = datetime.combine(datetime.min, self.delay)
-            eod_dt = datetime.combine(datetime.min, time(17, 0))
-            tw = (eod_dt - delay_dt).total_seconds()
-            # 0.9 is the chosen weight for delays because they are less difficult to schedule than deadlines
-            self.priority = 0.9 - (1 / tw)
-        elif self.requires_truck:
-            # gives a lower priority than delays and deadlines while still being higher than normal packages
-            self.priority = 0.9
-        elif self.depends_on:
-            # gives a lower priority than delays and deadlines while still being higher than normal packages
-            self.priority = 0.9
+    def get_window(self) -> timedelta:
+        departure = time(8, 0)
+        if self.delay:
+            departure = self.delay
+        # we cant subtract times from each other so we have to combine them with a date
+        departure_dt = datetime.combine(datetime.min, departure)
+        deadline = time(17, 0)
+        if self.deadline:
+            deadline = self.deadline
+        deadline_dt = datetime.combine(datetime.min, deadline)
+        return deadline_dt - departure_dt
+
+    def tw_is_smaller(self, other: 'Package') -> bool:
+        """Check if this package has a smaller time window than another package"""
+        return self.get_window() < other.get_window()
+
+    def dep_is_gt(self, other: 'Package') -> bool:
+        """Check if this package is depended on more than another package"""
+        return len(self.depends_on) > len(other.depends_on)
+
+    def requires_truck_is_gt(self, other: 'Package') -> bool:
+        """Check if only one package requires a truck"""
+        return self.requires_truck and not other.requires_truck
+
+    def priority_is_gt(self, other: 'Package') -> bool:
+        """Check if this package is higher priority than another package"""
+        if self.requires_truck_is_gt(other):
+            return True
+        elif self.tw_is_smaller(other):
+            return True
         else:
-            # normal packages have the lowest priority
-            self.priority = 1
+            return False
+
+    def __gt__(self, other):
+        return self.priority_is_gt(other)
+
+    def __lt__(self, other):
+        return other.priority_is_gt(self)
+
 
 
 # allows for O(1) access to packages by package id
@@ -233,6 +232,8 @@ DistanceMatrix = List[List[float]]
 class PackageMap:
     def __init__(self) -> None:
         self.package_map: Map[int, Package] = Map[int, Package]()
+        # package ids sorted by priority
+        self.by_priority: List[Package] = []
 
     def insert(self, package: Package) -> None:
         self.package_map.insert(package.pack_id, package)
@@ -245,6 +246,14 @@ class PackageMap:
 
     def list_values(self) -> List[Package]:
         return self.package_map.list_values()
+
+    def list_keys(self) -> List[int]:
+        return self.package_map.list_keys()
+
+    def sort_by_priority(self) -> None:
+        # set the by_priority list of packages
+        self.by_priority = sorted(self.package_map.list_values(), reverse=True)
+
 
 
 @dataclass
@@ -300,8 +309,8 @@ class TruckMap:
 
     def _default(self):
         truck1 = Truck(1)
-        truck2 = Truck(2, departure_time=time(9, 5))
-        truck3 = Truck(3, departure_time=time(10, 40), has_driver=False)
+        truck2 = Truck(3, departure_time=time(9, 5))
+        truck3 = Truck(2, departure_time=time(11, 00), has_driver=False)
         self.insert(truck1)
         self.insert(truck2)
         self.insert(truck3)
@@ -389,27 +398,27 @@ def read_package_csv(file_path: str, address_map: AddressMap) -> PackageMap:
     """read packages from a csv file"""
     packages = PackageMap()
     reader = csv.reader(open(file_path, 'r'))
-    # graph of dependencies
-    # key is the package id
-    # list of package ids that depend on the key
-    dependencies = Map[int, List[int]]()
+    # track the packages that depend on other packages
+    dependent_packages = Map[int, List[int]]()
     # skip header
     next(reader)
     for row in reader:
         package = read_package_row(row, address_map)
         packages.insert(package)
-        print(package)
         if package.depends_on:
-            # if package depends on other packages
-            # add the package to the is_depended_on list of the packages it depends on
-            # this forms a dependency graph
+            if package.pack_id not in dependent_packages:
+                dependent_packages.insert(package.pack_id, [])
+            dependent_packages.get(package.pack_id).extend(package.depends_on)
+            # set the packages that depend on other packages
             for pack_id in package.depends_on:
-                if pack_id not in dependencies:
-                    dependencies.insert(pack_id, [])
-                dependencies.get(pack_id).append(package.pack_id)
-    # add the dependency graph to the packages
-    for pack_id, dependents in dependencies:
-        packages.get(pack_id).is_depended_on = dependents
+                if pack_id not in dependent_packages:
+                    dependent_packages.insert(pack_id, [])
+                dependent_packages.get(pack_id).append(package.pack_id)
+    # update package dependencies once all packages are read
+    for pack_id, dependents in dependent_packages:
+        package = packages.get(pack_id)
+        package.depends_on = dependents
+    packages.sort_by_priority()
     return packages
 
 # CORE FUNCTIONS
@@ -425,13 +434,6 @@ def pack_req_truck(package: Package, truck_map: TruckMap, package_map: PackageMa
     return package.requires_truck
 
 
-# called when a package requires a truck
-def pack_req_packs(package: Package, truck_map: TruckMap, package_map: PackageMap, distance_matrix: DistanceMatrix) -> int:
-    # get the truck that is carrying the required packages
-    # TODO: reimplement with dependency graph
-    pass
-
-
 def pack_delay_deadline(package: Package, truck_map: TruckMap, package_map: PackageMap, distance_matrix: DistanceMatrix) -> int:
     # find a truck that can deliver the package before the deadline but leaves after the delay
     # O(N) where N is the number of trucks
@@ -440,7 +442,8 @@ def pack_delay_deadline(package: Package, truck_map: TruckMap, package_map: Pack
         if truck.time_when_route_complete() <= package.deadline and truck.departure_time >= package.delay and not truck.truck_full():
             if not viable_truck:
                 viable_truck = truck
-            elif truck.packages < viable_truck.packages:
+            # truck closest to the package address is the most viable
+            elif distance_matrix[truck.route[-1]][package.address_id] < distance_matrix[viable_truck.route[-1]][package.address_id]:
                 viable_truck = truck
     if viable_truck:
         truck_map.get(viable_truck.truck_id).load(package, distance_matrix)
@@ -458,7 +461,8 @@ def pack_delay(package: Package, truck_map: TruckMap, package_map: PackageMap, d
         if truck.departure_time >= package.delay and not truck.truck_full():
             if not viable_truck:
                 viable_truck = truck
-            elif truck.packages < viable_truck.packages:
+            # truck closest to the package address is the most viable
+            elif distance_matrix[truck.route[-1]][package.address_id] < distance_matrix[viable_truck.route[-1]][package.address_id]:
                 viable_truck = truck
     if viable_truck:
         truck_map.get(viable_truck.truck_id).load(package, distance_matrix)
@@ -476,8 +480,8 @@ def pack_deadline(package: Package, truck_map: TruckMap, package_map: PackageMap
         if truck.time_when_route_complete() <= package.deadline and not truck.truck_full():
             if not viable_truck:
                 viable_truck = truck
-            elif truck.packages < viable_truck.packages:
-                # emptiest truck will always be the most viable for load balancing
+            # truck closest to the package address is the most viable
+            elif distance_matrix[truck.route[-1]][package.address_id] < distance_matrix[viable_truck.route[-1]][package.address_id]:
                 viable_truck = truck
     if viable_truck:
         truck_map.get(viable_truck.truck_id).load(package, distance_matrix)
@@ -485,6 +489,21 @@ def pack_deadline(package: Package, truck_map: TruckMap, package_map: PackageMap
         return viable_truck.truck_id
     # if no truck can deliver the package before the deadline
     raise ValueError(f'No truck can deliver package {package.pack_id} before the deadline')
+
+
+def pack_depends_on(package: Package, truck_map: TruckMap, package_map: PackageMap, distance_matrix: DistanceMatrix) -> int:
+    # because of how we sort the packages by priority
+    # we know the packages that depend on this package are right after it in priority and this is the most restrictive
+    # by restrictive i mean that the package
+    truck_id = assign_pack(package, truck_map, package_map, distance_matrix)
+    # get the package that depends on this package
+    for pack_id in package.depends_on:
+        if package_map.get(pack_id).truck_id:
+            raise ValueError(f'Package {pack_id} depends on package {package.pack_id} but package {pack_id} is already assigned to truck {package_map.get(pack_id).truck_id} but needs to be assigned to truck {truck_id}')
+        # assign the package that depends on this package
+        truck_map.get(truck_id).load(package_map.get(pack_id), distance_matrix)
+        package_map.get(pack_id).truck_id = truck_id
+    return truck_id
 
 
 def greedy_assign(package: Package, truck_map: TruckMap, package_map: PackageMap, distance_matrix: DistanceMatrix) -> int:
@@ -519,41 +538,16 @@ def assign_pack(package: Package, truck_map: TruckMap, package_map: PackageMap, 
     worst case O(N * M) where N is the number of trucks and M is the number of packages required by the package
     but M is small and constantly 3. so it is effectively O(N)
     """
-    truck_id = None
-    if package.truck_id:
-        truck_id = package.truck_id
-    elif package.deadline and package.delay:
-        truck_id = pack_delay_deadline(package, truck_map, package_map, distance_matrix)
+    if package.deadline and package.delay:
+        return pack_delay_deadline(package, truck_map, package_map, distance_matrix)
     elif package.delay:
-        truck_id = pack_delay(package, truck_map, package_map, distance_matrix)
-    # if package has a deadline
+        return pack_delay(package, truck_map, package_map, distance_matrix)
     elif package.deadline:
-        truck_id = pack_deadline(package, truck_map, package_map, distance_matrix)
-    # check if package requires a specific truck
+        return pack_deadline(package, truck_map, package_map, distance_matrix)
     elif package.requires_truck:
-        truck_id = pack_req_truck(package, truck_map, package_map, distance_matrix)
-    # if package must be delivered in the same truck as other packages
-    elif package.depends_on:
-        truck_id = pack_req_packs(package, truck_map, package_map, distance_matrix)
+        return pack_req_truck(package, truck_map, package_map, distance_matrix)
     else:
-        truck_id = greedy_assign(package, truck_map, package_map, distance_matrix)
-    if truck_id:
-        if package.is_depended_on:
-            # if the package has dependents
-            # assign the dependents to the same truck
-            for pack_id in package.is_depended_on:
-                assign_pack(package_map.get(pack_id), truck_map, package_map, distance_matrix)
-        return truck_id
-    else:
-        raise ValueError(f'No truck can deliver package {package.pack_id}')
-
-
-# sort packs by priority
-def sort_packs(package_map: PackageMap) -> List[Package]:
-    # sorted has a time complexity of O(N log N)
-    sorted_packs = sorted(package_map.list_values(), key=lambda x: x.priority)
-    return sorted_packs
-
+        return greedy_assign(package, truck_map, package_map, distance_matrix)
 
 def assign_packs(package_map: PackageMap, truck_map: TruckMap, distance_matrix: DistanceMatrix) -> None:
     """
@@ -561,18 +555,21 @@ def assign_packs(package_map: PackageMap, truck_map: TruckMap, distance_matrix: 
     best case O(N) where N is the number of packages
     worst case is O(N^2) where N is the number of packages
     """
-    # sort the packages by priority
-    sorted_packs = sort_packs(package_map)
     # assign each package to a truck
-    for pack in sorted_packs:
+    for pack in package_map.by_priority:
         try:
-            assign_pack(pack, truck_map, package_map, distance_matrix)
+            if pack.truck_id:
+                continue
+            elif pack.depends_on:
+                pack_depends_on(pack, truck_map, package_map, distance_matrix)
+            else:
+                assign_pack(pack, truck_map, package_map, distance_matrix)
         except ValueError as e:
             # gives a nice error message
             print(e)
             # shows the current state of the trucks in a way to make it easier to debug
     for truck in truck_map.trucks.list_values():
-        print(truck.truck_id, sorted(truck.packages), truck.route_distance, truck.time_when_route_complete())
+        print(f'Truck {truck.truck_id} Packages: {truck.packages} Distance: {truck.route_distance} Time: {truck.time_when_route_complete()}')
 
 
 def main():
@@ -581,7 +578,6 @@ def main():
     package_map = read_package_csv('data/packages.csv', address_map)
     truck_map = TruckMap()
     assign_packs(package_map, truck_map, distance_matrix)
-
 
 
 if __name__ == '__main__':
