@@ -222,6 +222,8 @@ class Package:
     def __lt__(self, other):
         return other.priority_is_gt(self)
 
+    def __eq__(self, other):
+        return not self.priority_is_gt(other) and not other.priority_is_gt(self)
 
 
 # allows for O(1) access to packages by package id
@@ -233,7 +235,7 @@ class PackageMap:
     def __init__(self) -> None:
         self.package_map: Map[int, Package] = Map[int, Package]()
         # package ids sorted by priority
-        self.by_priority: List[Package] = []
+        self.by_priority: List[int] = []
 
     def insert(self, package: Package) -> None:
         self.package_map.insert(package.pack_id, package)
@@ -251,9 +253,16 @@ class PackageMap:
         return self.package_map.list_keys()
 
     def sort_by_priority(self) -> None:
-        # set the by_priority list of packages
-        self.by_priority = sorted(self.package_map.list_values(), reverse=True)
-
+        # pre-sort the packages by priority
+        pre_sort = sorted(self.list_values(), reverse=True)
+        for package in pre_sort:
+            if package.pack_id not in self.by_priority:
+                if package.depends_on:
+                    dep_list = [package] + [self.get(dep) for dep in package.depends_on]
+                    dep_list = sorted(dep_list, reverse=True)
+                    self.by_priority.extend([dep.pack_id for dep in dep_list])
+                else:
+                    self.by_priority.append(package.pack_id)
 
 
 @dataclass
@@ -416,8 +425,9 @@ def read_package_csv(file_path: str, address_map: AddressMap) -> PackageMap:
                 dependent_packages.get(pack_id).append(package.pack_id)
     # update package dependencies once all packages are read
     for pack_id, dependents in dependent_packages:
-        package = packages.get(pack_id)
-        package.depends_on = dependents
+        for dep_id in dependents:
+            if pack_id not in packages.get(dep_id).depends_on:
+                packages.get(dep_id).depends_on.append(pack_id)
     packages.sort_by_priority()
     return packages
 
@@ -498,6 +508,8 @@ def pack_depends_on(package: Package, truck_map: TruckMap, package_map: PackageM
     truck_id = assign_pack(package, truck_map, package_map, distance_matrix)
     # get the package that depends on this package
     for pack_id in package.depends_on:
+        if package_map.get(pack_id).truck_id == truck_id:
+            continue
         if package_map.get(pack_id).truck_id:
             raise ValueError(f'Package {pack_id} depends on package {package.pack_id} but package {pack_id} is already assigned to truck {package_map.get(pack_id).truck_id} but needs to be assigned to truck {truck_id}')
         # assign the package that depends on this package
@@ -556,8 +568,9 @@ def assign_packs(package_map: PackageMap, truck_map: TruckMap, distance_matrix: 
     worst case is O(N^2) where N is the number of packages
     """
     # assign each package to a truck
-    for pack in package_map.by_priority:
+    for pack_id in package_map.by_priority:
         try:
+            pack = package_map.get(pack_id)
             if pack.truck_id:
                 continue
             elif pack.depends_on:
@@ -569,7 +582,7 @@ def assign_packs(package_map: PackageMap, truck_map: TruckMap, distance_matrix: 
             print(e)
             # shows the current state of the trucks in a way to make it easier to debug
     for truck in truck_map.trucks.list_values():
-        print(f'Truck {truck.truck_id} Packages: {truck.packages} Distance: {truck.route_distance} Time: {truck.time_when_route_complete()}')
+        print(f'Truck {truck.truck_id} Packages: {sorted(truck.packages)} Distance: {truck.route_distance} Time: {truck.time_when_route_complete()}')
 
 
 def main():
