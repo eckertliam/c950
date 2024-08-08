@@ -1,4 +1,3 @@
-import math
 from typing import List, Optional, Tuple, TypeVar, Generic
 from enum import Enum, auto
 import csv
@@ -20,6 +19,10 @@ TRUCK_MAX_MILES = 140
 TRUCK_HUB = 0
 
 # DATA STRUCTURES
+
+# allows for O(1) access to packages by package id
+# matrix[package 1][package 2] = distance between package 1 and package 2
+DistanceMatrix = List[List[float]]
 
 # first we need generic type variables for the map
 # K is the key type
@@ -199,36 +202,34 @@ class Package:
         """Check if this package has a smaller time window than another package"""
         return self.get_window() < other.get_window()
 
-    def dep_is_gt(self, other: 'Package') -> bool:
-        """Check if this package is depended on more than another package"""
-        return len(self.depends_on) > len(other.depends_on)
-
-    def requires_truck_is_gt(self, other: 'Package') -> bool:
-        """Check if only one package requires a truck"""
-        return self.requires_truck and not other.requires_truck
-
-    def priority_is_gt(self, other: 'Package') -> bool:
+    def priority_is_gt(self, other: 'Package', distance_matrix: DistanceMatrix) -> bool:
         """Check if this package is higher priority than another package"""
-        if self.requires_truck_is_gt(other):
+        if self.requires_truck and not other.requires_truck:
             return True
-        elif self.tw_is_smaller(other):
-            return True
-        else:
+        if not self.requires_truck and other.requires_truck:
             return False
-
-    def __gt__(self, other):
-        return self.priority_is_gt(other)
-
-    def __lt__(self, other):
-        return other.priority_is_gt(self)
-
-    def __eq__(self, other):
-        return not self.priority_is_gt(other) and not other.priority_is_gt(self)
+        if self.tw_is_smaller(other):
+            return True
+        if other.tw_is_smaller(self):
+            return False
+        return distance_matrix[TRUCK_HUB][self.address_id] < distance_matrix[TRUCK_HUB][other.address_id]
 
 
-# allows for O(1) access to packages by package id
-# matrix[package 1][package 2] = distance between package 1 and package 2
-DistanceMatrix = List[List[float]]
+def sort_packs_simple(pack_list: List[Package], distance_matrix: DistanceMatrix) -> List[Package]:
+    # utility function to sort packages by priority
+    # used by package map to sort packages by priority
+    ordered = []
+    for pack in pack_list:
+        if not ordered:
+            ordered.append(pack)
+        else:
+            for i, ordered_pack in enumerate(ordered):
+                if pack.priority_is_gt(ordered_pack, distance_matrix):
+                    ordered.insert(i, pack)
+                    break
+            else:
+                ordered.append(pack)
+    return ordered
 
 
 class PackageMap:
@@ -252,27 +253,29 @@ class PackageMap:
     def list_keys(self) -> List[int]:
         return self.package_map.list_keys()
 
-    def sort_by_priority(self) -> None:
+    def sort_by_priority(self, distance_matrix: DistanceMatrix) -> None:
         # pre-sort the packages by priority
-        pre_sort = sorted(self.list_values(), reverse=True)
-        for package in pre_sort:
-            if package.pack_id not in self.by_priority:
-                if package.depends_on:
-                    dep_list = [package] + [self.get(dep) for dep in package.depends_on]
-                    dep_list = sorted(dep_list, reverse=True)
-                    self.by_priority.extend([dep.pack_id for dep in dep_list])
-                else:
-                    self.by_priority.append(package.pack_id)
+        pre_sorted = sort_packs_simple(self.list_values(), distance_matrix)
+        for package in pre_sorted:
+            if package.pack_id in self.by_priority:
+                continue
+            elif package.depends_on:
+                dep_list = [package] + [self.get(dep) for dep in package.depends_on]
+                dep_list = sort_packs_simple(dep_list, distance_matrix)
+                self.by_priority.extend([dep.pack_id for dep in dep_list])
+            else:
+                self.by_priority.append(package.pack_id)
 
 
 @dataclass
 class Truck:
     """Truck is a vehicle that delivers packages to addresses
-    it has a truck id, a list of package ids it is carrying, and a list of addresses it has visited"""
+    it has a truck id, a list of package ids it is carrying,
+    and a list of addresses it has visited along with the time it visited them"""
     truck_id: int
     route: list[int] = field(default_factory=list)
     packages: List[int] = field(default_factory=list)
-    visited: List[int] = field(default_factory=list)
+    visited: List[Tuple[int, time]] = field(default_factory=list)
     departure_time: time = time(8, 0)
     complete_time: Optional[time] = None
     has_driver: bool = True
@@ -309,6 +312,29 @@ class Truck:
         # during the delivery process time_for_route will be used to calculate the delivery time of packages
         self.time_for_route = timedelta(hours=0)
 
+    def deliver_next(self, package_map: PackageMap, distance_matrix: DistanceMatrix) -> None:
+        """deliver the next package in the route"""
+        # pop first address from route
+        next_address = self.route.pop(0)
+        # get the current address which will be the last address in visited
+        current_address = self.visited[-1][0]
+        # get the distance between the two addresses
+        distance = distance_matrix[current_address][next_address]
+        # get the minutes it takes to travel the distance
+        minutes = distance / TRUCK_SPEED * 60
+        # add the minutes to the time for route
+        self.time_for_route += timedelta(minutes=minutes)
+        # get the time the truck will arrive at the address
+        # we repurpose time_for_route to calculate the delivery time
+        arrival_time = self.time_when_route_complete()
+        # set all packages on the truck that are going to the address to delivered
+        for pack_id in self.packages:
+            pack = package_map.get(pack_id)
+            if pack.address_id == next_address:
+                package_map.get(pack_id).status = PackageStatus.DELIVERED
+                package_map.get(pack_id).delivery_time = arrival_time
+        # add the address to visited with the arrival time
+        self.visited.append((next_address, arrival_time))
 
 
 class TruckMap:
@@ -318,8 +344,10 @@ class TruckMap:
 
     def _default(self):
         truck1 = Truck(1)
-        truck2 = Truck(3, departure_time=time(9, 5))
-        truck3 = Truck(2, departure_time=time(11, 00), has_driver=False)
+        # sets off after truck1 is finished since it has no driver
+        truck2 = Truck(2, departure_time=time(11, 00), has_driver=False)
+        # sets off when most delayed packs arrive
+        truck3 = Truck(3, departure_time=time(9, 5))
         self.insert(truck1)
         self.insert(truck2)
         self.insert(truck3)
@@ -329,6 +357,11 @@ class TruckMap:
 
     def get(self, truck_id: int) -> Optional[Truck]:
         return self.trucks.get(truck_id)
+
+    def prep_for_departure(self) -> None:
+        # reset truck time
+        for truck in self.trucks.list_values():
+            truck.prep_departure()
 
 
 # INFINITY
@@ -403,7 +436,7 @@ def read_package_row(row: List[str], address_map: AddressMap) -> Package:
     return Package(address.address_id, weight, pack_id, deadline, status, requires_truck, None, delay, depends_on)
 
 
-def read_package_csv(file_path: str, address_map: AddressMap) -> PackageMap:
+def read_package_csv(file_path: str, address_map: AddressMap, distance_matrix: DistanceMatrix) -> PackageMap:
     """read packages from a csv file"""
     packages = PackageMap()
     reader = csv.reader(open(file_path, 'r'))
@@ -428,7 +461,7 @@ def read_package_csv(file_path: str, address_map: AddressMap) -> PackageMap:
         for dep_id in dependents:
             if pack_id not in packages.get(dep_id).depends_on:
                 packages.get(dep_id).depends_on.append(pack_id)
-    packages.sort_by_priority()
+    packages.sort_by_priority(distance_matrix)
     return packages
 
 # CORE FUNCTIONS
@@ -504,9 +537,11 @@ def pack_deadline(package: Package, truck_map: TruckMap, package_map: PackageMap
 def pack_depends_on(package: Package, truck_map: TruckMap, package_map: PackageMap, distance_matrix: DistanceMatrix) -> int:
     # because of how we sort the packages by priority
     # we know the packages that depend on this package are right after it in priority and this is the most restrictive
-    # by restrictive i mean that the package
+    # by restrictive i mean the package which has the smallest time window and the most dependencies
     truck_id = assign_pack(package, truck_map, package_map, distance_matrix)
-    # get the package that depends on this package
+    # get the packages that depend on this package
+    # TODO: now we have to figure out the optimal order to assign these packages to the truck
+
     for pack_id in package.depends_on:
         if package_map.get(pack_id).truck_id == truck_id:
             continue
@@ -561,12 +596,15 @@ def assign_pack(package: Package, truck_map: TruckMap, package_map: PackageMap, 
     else:
         return greedy_assign(package, truck_map, package_map, distance_matrix)
 
+
 def assign_packs(package_map: PackageMap, truck_map: TruckMap, distance_matrix: DistanceMatrix) -> None:
     """
     Assign all packages to trucks
     best case O(N) where N is the number of packages
     worst case is O(N^2) where N is the number of packages
     """
+    # error list
+    errors = []
     # assign each package to a truck
     for pack_id in package_map.by_priority:
         try:
@@ -578,19 +616,34 @@ def assign_packs(package_map: PackageMap, truck_map: TruckMap, distance_matrix: 
             else:
                 assign_pack(pack, truck_map, package_map, distance_matrix)
         except ValueError as e:
-            # gives a nice error message
-            print(e)
-            # shows the current state of the trucks in a way to make it easier to debug
+            # lets all errors pass through before stopping the program
+            errors.append(e)
+    if errors:
+        print('Errors occurred while loading packages:')
+        for error in errors:
+            print(error)
+        # shows the current state of the trucks in a way to make it easier to debug
+        for truck in truck_map.trucks.list_values():
+            print(
+                f'Truck {truck.truck_id} Packages: {sorted(truck.packages)} Distance: {truck.route_distance} Time: {truck.time_when_route_complete()}')
+        # exit with error
+        exit(1)
+    # add all truck miles together
+    total_miles = 0
     for truck in truck_map.trucks.list_values():
-        print(f'Truck {truck.truck_id} Packages: {sorted(truck.packages)} Distance: {truck.route_distance} Time: {truck.time_when_route_complete()}')
+        total_miles += truck.route_distance
+    print(f'Total Miles: {total_miles}')
 
 
 def main():
     distance_matrix = distance_matrix_from_csv('data/distances.csv')
     address_map = read_address_csv('data/address_id.csv')
-    package_map = read_package_csv('data/packages.csv', address_map)
+    package_map = read_package_csv('data/packages.csv', address_map, distance_matrix)
+    for pack in package_map.by_priority:
+        print(pack)
     truck_map = TruckMap()
     assign_packs(package_map, truck_map, distance_matrix)
+    truck_map.prep_for_departure()
 
 
 if __name__ == '__main__':
