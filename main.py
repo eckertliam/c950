@@ -38,15 +38,13 @@ class Map(Generic[K, V]):
         self.buckets: List[List[Tuple[K, V]]] = [[] for _ in range(size)]
 
     def _hash(self, key: K) -> int:
-        """Private hash function to determine the bucket index for a key"""
+        # private hash function
         return hash(key) % self.size
 
     def insert(self, key: K, value: V) -> None:
-        """
-        Set a key value pair into the map or update the value if key already exists.
-        Best case O(1) if key is at the beginning of the bucket or bucket is empty.
-        Worst case O(N) if key is at the end of the bucket.
-        """
+        # insert a key-value pair into the map
+        # best case O(1) if bucket is empty
+        # worst case O(N) if key is at the end of the bucket
         # get the bucket index
         idx = self._hash(key)
         # check if bucket is empty
@@ -62,10 +60,9 @@ class Map(Generic[K, V]):
         self.buckets[idx].append((key, value))
 
     def remove(self, key: K) -> None:
-        """Remove a key-value pair by key.
-        Best case O(1) if key is at the beginning of the bucket.
-        Worst case O(N) if key is at the end of the bucket.
-        """
+        # remove a key-value pair from the map
+        # best case O(1) if key is at the beginning of the bucket
+        # worst case O(N) if key is at the end of the bucket
         idx = self._hash(key)
         for i, (k, _) in enumerate(self.buckets[idx]):
             if k == key:
@@ -73,10 +70,8 @@ class Map(Generic[K, V]):
                 return
 
     def get(self, key: K) -> Optional[V]:
-        """Get a value by key.
-        Best case O(1) if key is at the beginning of the bucket.
-        Worst case O(N) if key is at the end of the bucket.
-        """
+        # get a value by key from the map
+        # best case O(1) if key is at the beginning of the bucket
         idx = self._hash(key)
         for k, v in self.buckets[idx]:
             if k == key:
@@ -90,20 +85,18 @@ class Map(Generic[K, V]):
         return self.get(key)
 
     def list_all(self) -> List[Tuple[K, V]]:
-        """
-        List all key-value pairs in the map O(N)
-        """
+        # list all key-value pairs in the map O(N)
         return [item for bucket in self.buckets for item in bucket]
 
     def __iter__(self):
         return iter(self.list_all())
 
     def list_keys(self) -> List[K]:
-        """List all keys in the map O(N)"""
+        # list all keys in the map O(N)
         return [k for bucket in self.buckets for k, _ in bucket]
 
     def list_values(self) -> List[V]:
-        """List all values in the map O(N)"""
+        # list all values in the map O(N)
         return [v for bucket in self.buckets for _, v in bucket]
 
     def __len__(self):
@@ -161,33 +154,33 @@ class PackageStatus(Enum):
 
 @dataclass
 class Package:
-    """
-    Package Dataclass:
-    address_id: points to an address in the address map
-    weight: the weight of the package
-    pack_id: the id of the package in the package map
-    deadline: optional deadline for the package
-    status: a status enum for the package
-    requires_truck: optional truck id that the package requires
-    truck_id: a truck id once the package is assigned to a truck
-    delay: for packages that are delayed
-    depends_on: a list of package ids that this package requires
-    is_depended_on: a list of package ids that require this package
-    delivery_time: the time the package was delivered
-    """
+    # Package dataclass
+    # address_id points to the address id in the address map
     address_id: int
     weight: float
     pack_id: int
+    # optional deadline
     deadline: Optional[time] = None
+    # status enum
     status: PackageStatus = PackageStatus.HUB
+    # optional truck requirement
     requires_truck: Optional[int] = None
+    # truck id once assigned
     truck_id: Optional[int] = None
+    # optional delay
     delay: Optional[time] = None
+    # packages that depend on this package or that this package depends on
+    # built during package reading
     depends_on: List[int] = field(default_factory=list)
+    # delivery time
     delivery_time: Optional[time] = None
 
     def get_window(self) -> timedelta:
+        # get an approximation of the time window in which the package can be delivered
+        # since packages have not been assigned to trucks yet we have to use the default departure time
+        # O(1)
         departure = time(8, 0)
+        # delay becomes the departure time if it exists
         if self.delay:
             departure = self.delay
         # we cant subtract times from each other so we have to combine them with a date
@@ -196,38 +189,47 @@ class Package:
         if self.deadline:
             deadline = self.deadline
         deadline_dt = datetime.combine(datetime.min, deadline)
+        # return the time window as a timedelta
         return deadline_dt - departure_dt
 
-    def tw_is_smaller(self, other: 'Package') -> bool:
-        """Check if this package has a smaller time window than another package"""
-        return self.get_window() < other.get_window()
-
     def priority_is_gt(self, other: 'Package', distance_matrix: DistanceMatrix) -> bool:
-        """Check if this package is higher priority than another package"""
+        # check if the priority of the package is greater than another package
+        # packages that require a truck have the highest priority
+        # O(1)
         if self.requires_truck and not other.requires_truck:
             return True
         if not self.requires_truck and other.requires_truck:
+            # if the other package requires a truck it has higher priority
             return False
-        if self.tw_is_smaller(other):
+        self_tw = self.get_window()
+        other_tw = other.get_window()
+        # the package with the smallest time window has the highest priority
+        if self_tw < other_tw:
             return True
-        if other.tw_is_smaller(self):
+        if self_tw > other_tw:
             return False
+        # if the time windows are the same the package that is closest to the hub has the highest priority
+        # this helps to reduce overall route distance
         return distance_matrix[TRUCK_HUB][self.address_id] < distance_matrix[TRUCK_HUB][other.address_id]
 
 
-def sort_packs_simple(pack_list: List[Package], distance_matrix: DistanceMatrix) -> List[Package]:
+def sort_pack_priority(pack_list: List[Package], distance_matrix: DistanceMatrix) -> List[Package]:
     # utility function to sort packages by priority
-    # used by package map to sort packages by priority
+    # used by package map to sort a list of packages by priority
+    # O(N^2) where N is the number of packages
     ordered = []
     for pack in pack_list:
+        # if the list is empty just add the package
         if not ordered:
             ordered.append(pack)
         else:
+            # insert the package into the list in order of priority
             for i, ordered_pack in enumerate(ordered):
                 if pack.priority_is_gt(ordered_pack, distance_matrix):
                     ordered.insert(i, pack)
                     break
             else:
+                # if the package is not inserted it has the lowest priority
                 ordered.append(pack)
     return ordered
 
@@ -255,29 +257,34 @@ class PackageMap:
 
     def sort_by_priority(self, distance_matrix: DistanceMatrix) -> None:
         # pre-sort the packages by priority
-        pre_sorted = sort_packs_simple(self.list_values(), distance_matrix)
+        pre_sorted = sort_pack_priority(self.list_values(), distance_matrix)
+        # sort the packages by priority and add them to the by_priority list
         for package in pre_sorted:
             if package.pack_id in self.by_priority:
                 continue
             elif package.depends_on:
                 dep_list = [package] + [self.get(dep) for dep in package.depends_on]
-                dep_list = sort_packs_simple(dep_list, distance_matrix)
+                # sort dependent packages by priority
+                dep_list = sort_pack_priority(dep_list, distance_matrix)
+                # add the dependent packages to the by_priority list
                 self.by_priority.extend([dep.pack_id for dep in dep_list])
             else:
+                # if the package does not have dependencies add it to the by_priority list
+                # it is already sorted
                 self.by_priority.append(package.pack_id)
 
 
 @dataclass
 class Truck:
-    """Truck is a vehicle that delivers packages to addresses
-    it has a truck id, a list of package ids it is carrying,
-    and a list of addresses it has visited along with the time it visited them"""
+    # Truck dataclass
     truck_id: int
+    # route is a list of address ids to be visited
     route: list[int] = field(default_factory=list)
+    # packages is a list of package ids to be delivered
     packages: List[int] = field(default_factory=list)
-    visited: List[Tuple[int, time]] = field(default_factory=list)
+    # visited is a list of address ids that have been visited
+    visited: List[int] = field(default_factory=list)
     departure_time: time = time(8, 0)
-    complete_time: Optional[time] = None
     has_driver: bool = True
     route_distance: float = 0
     time_for_route: timedelta = timedelta(hours=0)
@@ -306,35 +313,32 @@ class Truck:
         """check if the truck is full"""
         return len(self.packages) >= TRUCK_MAX_PACKAGES
 
-    def prep_departure(self) -> None:
-        # preps the truck for departure
-        # up until now time_for_route is the time it takes to get to the last address in the route
-        # during the delivery process time_for_route will be used to calculate the delivery time of packages
+    def step_through_route(self, package_map: PackageMap, distance_matrix: DistanceMatrix) -> None:
+        # reset time for route we'll use it to set package delivery times
         self.time_for_route = timedelta(hours=0)
+        # first move hub to visited since we are at the hub
+        self.visited.append(TRUCK_HUB)
+        # pop it off the route
+        self.route.pop(0)
+        while self.route:
+            # get the next address to visit
+            address = self.route.pop(0)
+            # add the address to the visited list
+            self.visited.append(address)
+            # get the distance travelled to the address
+            distance = distance_matrix[self.visited[-2]][self.visited[-1]]
+            # get the time travelled to the address
+            minutes = distance / TRUCK_SPEED * 60
+            # add the time to the time for route
+            self.time_for_route += timedelta(minutes=minutes)
+            pack_delivery_time = (datetime.combine(datetime.min, self.departure_time) + self.time_for_route).time()
+            for pack_id in self.packages:
+                pack = package_map.get(pack_id)
+                if pack.address_id == address:
+                    # set the delivery time
+                    package_map.get(pack_id).delivery_time = pack_delivery_time
 
-    def deliver_next(self, package_map: PackageMap, distance_matrix: DistanceMatrix) -> None:
-        """deliver the next package in the route"""
-        # pop first address from route
-        next_address = self.route.pop(0)
-        # get the current address which will be the last address in visited
-        current_address = self.visited[-1][0]
-        # get the distance between the two addresses
-        distance = distance_matrix[current_address][next_address]
-        # get the minutes it takes to travel the distance
-        minutes = distance / TRUCK_SPEED * 60
-        # add the minutes to the time for route
-        self.time_for_route += timedelta(minutes=minutes)
-        # get the time the truck will arrive at the address
-        # we repurpose time_for_route to calculate the delivery time
-        arrival_time = self.time_when_route_complete()
-        # set all packages on the truck that are going to the address to delivered
-        for pack_id in self.packages:
-            pack = package_map.get(pack_id)
-            if pack.address_id == next_address:
-                package_map.get(pack_id).status = PackageStatus.DELIVERED
-                package_map.get(pack_id).delivery_time = arrival_time
-        # add the address to visited with the arrival time
-        self.visited.append((next_address, arrival_time))
+
 
 
 class TruckMap:
@@ -358,10 +362,9 @@ class TruckMap:
     def get(self, truck_id: int) -> Optional[Truck]:
         return self.trucks.get(truck_id)
 
-    def prep_for_departure(self) -> None:
-        # reset truck time
+    def step_through_routes(self, package_map: PackageMap, distance_matrix: DistanceMatrix) -> None:
         for truck in self.trucks.list_values():
-            truck.prep_departure()
+            truck.step_through_route(package_map, distance_matrix)
 
 
 # INFINITY
@@ -540,8 +543,6 @@ def pack_depends_on(package: Package, truck_map: TruckMap, package_map: PackageM
     # by restrictive i mean the package which has the smallest time window and the most dependencies
     truck_id = assign_pack(package, truck_map, package_map, distance_matrix)
     # get the packages that depend on this package
-    # TODO: now we have to figure out the optimal order to assign these packages to the truck
-
     for pack_id in package.depends_on:
         if package_map.get(pack_id).truck_id == truck_id:
             continue
@@ -635,6 +636,40 @@ def assign_packs(package_map: PackageMap, truck_map: TruckMap, distance_matrix: 
     print(f'Total Miles: {total_miles}')
 
 
+# TUI FUNCTIONS
+
+def get_time() -> time:
+    # clear the screen using ANSI escape codes
+    print('\033[H\033[J', end='', flush=True)
+    # wait for user input
+    while True:
+        try:
+            time_str = input('Enter the time in the format HH:MM enter "exit" to end the program: ')
+            if time_str == 'exit':
+                exit(0)
+            return time.fromisoformat(time_str)
+        except ValueError:
+            print('Invalid time format')
+
+
+def dump_package_state(package_map: PackageMap, truck_map: TruckMap) -> None:
+    # first we get the time from the user
+    user_time = get_time()
+    for pack in package_map.list_values():
+        truck = truck_map.get(pack.truck_id)
+        # if user time is before truck departure time then the package is at the hub
+        if user_time < truck.departure_time:
+            print(f'Package: {pack.pack_id} At Hub on Truck {truck.truck_id}')
+        elif pack.delivery_time and user_time > pack.delivery_time:
+            # if user time is after the delivery time then the package was delivered
+            print(f'Package {pack.pack_id} was delivered at {pack.delivery_time} by Truck {truck.truck_id}')
+        else:
+            # otherwise we know the package is en route
+            print(f'Package {pack.pack_id} is en route on Truck {truck.truck_id}')
+    # recursively call the function
+    dump_package_state(package_map, truck_map)
+
+
 def main():
     distance_matrix = distance_matrix_from_csv('data/distances.csv')
     address_map = read_address_csv('data/address_id.csv')
@@ -643,7 +678,8 @@ def main():
         print(pack)
     truck_map = TruckMap()
     assign_packs(package_map, truck_map, distance_matrix)
-    truck_map.prep_for_departure()
+    truck_map.step_through_routes(package_map, distance_matrix)
+    dump_package_state(package_map, truck_map)
 
 
 if __name__ == '__main__':
